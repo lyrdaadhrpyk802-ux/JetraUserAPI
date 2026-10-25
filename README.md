@@ -1,3 +1,7 @@
+[![PyPI version](https://badge.fury.io/py/jetrauserapi.svg)](https://badge.fury.io/py/jetrauserapi)
+[![GitHub stars](https://img.shields.io/github/stars/lyrdaadhrpyk802-ux/JetraUserAPI.svg)](https://github.com/lyrdaadhrpyk802-ux/JetraUserAPI)
+
+# JetraUserAPI
 # JetraUserAPI
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
