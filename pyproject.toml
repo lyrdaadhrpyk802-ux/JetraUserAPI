@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jetrauserapi"
-version = "1.0.0"
+version = "1.0.1"
 description = "A Python library for interacting with Jetra Messenger (User Account)"
 readme = "README.md"
 requires-python = ">=3.10"
