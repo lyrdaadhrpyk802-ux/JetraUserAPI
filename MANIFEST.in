@@ -1,0 +1,12 @@
+include README.md
+include LICENSE
+include requirements.txt
+include CHANGELOG.md
+
+recursive-include jetrauserapi *.py
+recursive-include examples *.py
+recursive-include examples *.md
+
+exclude data/*
+exclude archive/*
+exclude *.bin

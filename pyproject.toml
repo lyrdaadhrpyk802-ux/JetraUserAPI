@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jetrauserapi"
+version = "1.0.0"
+description = "A Python library for interacting with Jetra Messenger (User Account)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Ali VEX", email = "your-email@example.com"}
+]
+keywords = ["jetra", "messenger", "api", "client", "telethon"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Communications :: Chat",
+]
+dependencies = [
+    "websockets>=10.0",
+    "pycryptodome>=3.15.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/YOUR_USERNAME/JetraUserAPI"
+Repository = "https://github.com/YOUR_USERNAME/JetraUserAPI"
+Issues = "https://github.com/YOUR_USERNAME/JetraUserAPI/issues"
