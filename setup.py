@@ -7,11 +7,11 @@ setup(
     name="jetrauserapi",
     version="1.0.1",
     author="Ali VEX",
-    author_email="your-email@example.com",
+    author_email="lyrdaadhrpyk802@gmail.com",
     description="A Python library for interacting with Jetra Messenger (User Account)",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/YOUR_USERNAME/JetraUserAPI",
+    url="https://github.com/lyrdaadhrpyk802-ux/JetraUserAPI",
     packages=find_packages(exclude=["examples", "examples.*"]),
     install_requires=[
         "websockets>=10.0",

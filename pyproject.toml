@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Ali VEX", email = "your-email@example.com"}
+    {name = "Ali VEX", email = "lyrdaadhrpyk802@gmail.com"}
 ]
 keywords = ["jetra", "messenger", "api", "client", "telethon"]
 classifiers = [
@@ -30,6 +30,6 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/JetraUserAPI"
-Repository = "https://github.com/YOUR_USERNAME/JetraUserAPI"
-Issues = "https://github.com/YOUR_USERNAME/JetraUserAPI/issues"
+Homepage = "https://github.com/lyrdaadhrpyk802-ux/JetraUserAPI"
+Repository = "https://github.com/lyrdaadhrpyk802-ux/JetraUserAPI"
+Issues = "https://github.com/lyrdaadhrpyk802-ux/JetraUserAPI/issues"
