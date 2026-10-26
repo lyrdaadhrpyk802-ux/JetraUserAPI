@@ -1,26 +1,32 @@
 import datetime
 
 
+class MessageEntity:
+    """Represents a text formatting entity (bold, italic, link, etc)."""
+    def __init__(self, type, offset, length, extra=None):
+        self.type = type
+        self.offset = offset
+        self.length = length
+        self.extra = extra
+
+    def __repr__(self):
+        return f"<Entity {self.type} offset={self.offset} length={self.length} extra={self.extra}>"
+
+
 class Message:
     """
     Represents a message in Jetra.
-    
-    Attributes:
-        id (int): Message ID
-        from_id (int): Sender's user ID
-        peer_id (int): Chat/Group/Channel ID
-        peer_type (str): 'user', 'group', or 'channel'
-        date (int): Unix timestamp
-        text (str): Message text
     """
     
-    def __init__(self, msg_id, from_id, peer_id, peer_type, date, text):
+    def __init__(self, msg_id, from_id, peer_id, peer_type, date, text, reply_to_msg_id=None, entities=None):
         self.id = msg_id
         self.from_id = from_id
         self.peer_id = peer_id
         self.peer_type = peer_type
         self.date = date
         self.text = text
+        self.reply_to_msg_id = reply_to_msg_id
+        self.entities = entities or []
     
     @property
     def is_private(self):
@@ -29,6 +35,10 @@ class Message:
     @property
     def is_group(self):
         return self.peer_type == 'group'
+
+    @property
+    def is_reply(self):
+        return self.reply_to_msg_id is not None
     
     @property
     def date_str(self):
@@ -45,6 +55,8 @@ class Message:
             'peer_type': self.peer_type,
             'date': self.date,
             'text': self.text,
+            'reply_to_msg_id': self.reply_to_msg_id,
+            'entities': [str(e) for e in self.entities]
         }
     
     @classmethod
@@ -56,7 +68,11 @@ class Message:
             peer_type=data['peer_type'],
             date=data['date'],
             text=data['text'],
+            reply_to_msg_id=data.get('reply_to_msg_id'),
+            entities=None
         )
     
     def __repr__(self):
-        return f"<Message id={self.id} from={self.from_id} peer={self.peer_id} ({self.peer_type}) text='{self.text[:30]}'>"
+        reply_str = f" (reply to {self.reply_to_msg_id})" if self.is_reply else ""
+        ent_str = f" [{len(self.entities)} entities]" if self.entities else ""
+        return f"<Message id={self.id} from={self.from_id} peer={self.peer_id} ({self.peer_type}){reply_str}{ent_str} text='{self.text[:30]}'>"

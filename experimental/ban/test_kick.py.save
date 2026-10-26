@@ -1,0 +1,117 @@
+kkkkkkkkkkkkklkkkkkkkk//		"""
+Test alternative kick methods: messages.deleteChatUser
+"""
+import sys
+import os
+import asyncio
+import struct
+
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+sys.path.insert(0, _PROJECT_ROOT)
+
+from jetrauserapi.config import DEFAULT_SESSION_FILE, DEFAULT_DB_FILE
+from experimental.ban.ban_client import BanJetraClient
+from jetrauserapi.high_level import RPC_ERROR, INPUT_PEER_USER
+from jetrauserapi.client import wrap_init_connection
+
+# messages.deleteChatUser
+DELETE_CHAT_USER_IDS = [
+    0xA2185CAB,  # Standard Telegram
+    0xE0611F16,  # Older Telegram variant
+]
+
+async def try_kick(client, channel_id, user_id, user_hash, ctor_id):
+    # messages.deleteChatUser takes chat_id (int) and user_id (InputUser)
+    # Chat ID for channels sometimes needs to be positive or negative.
+    # We try both.
+    
+    input_user = (
+        struct.pack("<I", 0xD8292816) + # InputUser
+        struct.pack("<q", user_id) +
+        struct.pack("<q", user_hash)
+    )
+    
+    # For channels, chat_id is usually just the channel ID
+    chat_id_bytes = struct.pack("<q", channel_id)
+    
+    body = (
+        struct.pack("<I", ctor_id) +
+        struct.pack("<I", 0) + # flags
+        chat_id_bytes +
+        input_user
+    )
+    
+    try:
+        result = await client.client.send_request(wrap_init_connection(body))
+        if not result: return ('NO_RESPONSE', None)
+        
+        result = client._unwrap_gzip(result)
+        resp_ctor = struct.unpack("<I", result[:4])[0]
+        
+        if resp_ctor == RPC_ERROR:
+            err = client._parse_rpc_error(result)
+            return ('ERROR', err)
+            
+        return ('SUCCESS', hex(resp_ctor))
+    except Exception as e:
+        return ('EXCEPTION', str(e))
+
+async def main():
+    print("=" * 60)
+    print("Test Alternative Kick Method")
+    print("=" * 60)
+    
+    client = BanJetraClient(DEFAULT_SESSION_FILE, DEFAULT_DB_FILE)
+    await client.start()
+    
+    groups = await client.get_groups()
+    if not groups:
+        print("No groups found.")
+        await client.stop()
+        return
+        
+    target = groups[0]
+    channel_id = target['peer_id']
+    print(f"Target group: {target['title']} ({channel_id})")
+    
+    users = await client.get_participants_with_hash(channel_id)
+    if not users:
+        print("No users.")
+        await client.stop()
+        return
+        
+    # Find a user that is not us
+    test_user = None
+    for u in users:
+        if u['id'] != client.session.user_id:
+            test_user = u
+            break
+            
+    if not test_user:
+        print("No other user to kick.")
+        await client.stop()
+        return
+
+    print(f"Attempting to kick user {test_user['id']}...\n")
+    
+    for ctor_id in DELETE_CHAT_USER_IDS:
+        label = hex(ctor_id)
+        print(f"Trying ctor {label}...")
+        status, detail = await try_kick(
+            client, channel_id, test_user['id'], test_user['access_hash'], ctor_id
+        )
+        
+        if status == 'SUCCESS':
+            print(f"  [SUCCESS] Kicked successfully with {label}!")
+            break
+        else:
+            print(f"  [{status}] {detail}")
+            
+        await asyncio.sleep(1)
+
+    await client.stop()
+
+if __name__ == "__main__":
+    akkkkkkkkkk/

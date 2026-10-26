@@ -4,29 +4,39 @@ import gzip
 import hashlib
 import datetime
 import random
-import json
-import os
 import time
 
 from jetrauserapi.client import JetraClient as LowLevelClient, wrap_init_connection, aes_ige_decrypt
 from jetrauserapi.session import JetraSession
-from jetrauserapi.message import Message
+from jetrauserapi.message import Message, MessageEntity
 from jetrauserapi.database import Database
-
+from jetrauserapi.exceptions import (
+    JetraError,
+    JetraConnectionError,
+    JetraRPCError,
+    JetraAuthError
+)
 
 INPUT_PEER_USER = 0xDDE8A54C
 INPUT_PEER_SELF = 0x7DA07EC9
 INPUT_PEER_CHANNEL = 0x27BCBBFC
+INPUT_CHANNEL = 0xF35AEC28
 
 PEER_USER = 0x59511722
 PEER_CHANNEL = 0xA2A5371E
 
 MSG_CTOR_JETRA = 0x7600B9D3
 SERVICE_MSG_CTOR_JETRA = 0x7A800E0A
+CHANNEL_CTOR = 0xD49F34C6
+USER_CTOR = 0xB1B8CC83
 
 SEND_MESSAGE_ID = 0xFEF48F62
 GET_DIALOGS_ID = 0xA0F4CB4F
 GET_STATE_ID = 0xEDD4882A
+GET_PARTICIPANTS_ID = 0x77CED9D0
+GET_FULL_CHANNEL_ID = 0x08736A09
+LEAVE_CHANNEL_ID = 0xF836AA95
+CONTACTS_SEARCH_ID = 0x11F812D8
 
 RPC_ERROR = 0x2144CA19
 GZIP_PACKED = 0x3072CFA1
@@ -49,7 +59,6 @@ class JetraClient:
         self._max_reconnect_attempts = 10
         self._ready_event = asyncio.Event()
 
-        # Lock for WebSocket recv() to prevent concurrency
         self._recv_lock = asyncio.Lock()
 
         client_ref = self.client
@@ -62,7 +71,6 @@ class JetraClient:
 
         self.client._pack_msg_id = _patched_pack_msg_id
 
-        # Patch send_request to use the lock
         original_send_request = self.client.send_request
         client_ref_for_patch = self
 
@@ -71,6 +79,13 @@ class JetraClient:
                 return await original_send_request(method_bytes)
 
         self.client.send_request = _patched_send_request
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
 
     def on_message(self, func):
         self._message_handlers.append(func)
@@ -102,7 +117,7 @@ class JetraClient:
 
     async def start(self, wait_ready=True, timeout=30):
         if not self.session.is_authorized():
-            raise Exception("Not logged in. Please run login.py first.")
+            raise JetraAuthError("Not logged in. Please run login.py first.")
 
         self._is_running = True
         self._listen_task = asyncio.create_task(self._main_loop())
@@ -111,7 +126,7 @@ class JetraClient:
             try:
                 await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
             except asyncio.TimeoutError:
-                raise Exception(f"Client did not become ready within {timeout}s")
+                raise JetraConnectionError(f"Client did not become ready within {timeout}s")
 
     async def _main_loop(self):
         attempt = 0
@@ -160,7 +175,6 @@ class JetraClient:
     async def _listen_loop(self):
         while self._is_running:
             try:
-                # Use lock with short timeout to avoid blocking send_request
                 raw = None
                 try:
                     async with asyncio.timeout(0.1):
@@ -227,7 +241,7 @@ class JetraClient:
                 if not self._is_running:
                     break
                 if self.client.ws.closed:
-                    raise Exception("WebSocket closed")
+                    raise JetraConnectionError("WebSocket closed")
                 await asyncio.sleep(0.1)
 
     async def stop(self):
@@ -270,12 +284,13 @@ class JetraClient:
     def _parse_message(self, data, offset, ctor):
         try:
             offset += 4
-
             if ctor == SERVICE_MSG_CTOR_JETRA:
                 offset += 4
                 msg_id = struct.unpack("<i", data[offset:offset + 4])[0]
                 offset += 4
+                flags = 0
             else:
+                flags = struct.unpack("<i", data[offset:offset + 4])[0]
                 offset += 4
                 offset += 4
                 msg_id = struct.unpack("<i", data[offset:offset + 4])[0]
@@ -294,12 +309,64 @@ class JetraClient:
             date = struct.unpack("<i", data[offset:offset + 4])[0]
             offset += 4
 
+            reply_to_msg_id = None
+            if ctor != SERVICE_MSG_CTOR_JETRA and (flags & 0x1):
+                try:
+                    reply_to_msg_id = struct.unpack("<i", data[offset:offset + 4])[0]
+                    offset += 4
+                except Exception:
+                    pass
+
             text = ""
             try:
                 text_len = data[offset]
                 text = data[offset + 1:offset + 1 + text_len].decode('utf-8', errors='ignore')
+                offset += 1 + text_len
+                offset = (offset + 3) & ~3
             except:
                 pass
+
+            entities = []
+            if offset + 8 <= len(data):
+                vec_ctor = struct.unpack("<I", data[offset:offset+4])[0]
+                if vec_ctor == 0x1CB5C415:
+                    count = struct.unpack("<i", data[offset+4:offset+8])[0]
+                    offset += 8
+                    for _ in range(count):
+                        if offset + 12 > len(data): break
+                        e_ctor = struct.unpack("<I", data[offset:offset+4])[0]
+                        e_offset = struct.unpack("<i", data[offset+4:offset+8])[0]
+                        e_length = struct.unpack("<i", data[offset+8:offset+12])[0]
+                        offset += 12
+                        
+                        e_type = "unknown"
+                        extra = None
+                        if e_ctor == 0xBD610BC9: e_type = "bold"
+                        elif e_ctor == 0x826F8B60: e_type = "italic"
+                        elif e_ctor == 0x9C4E7E8B: e_type = "underline"
+                        elif e_ctor == 0xBF0693D4: e_type = "strike"
+                        elif e_ctor == 0x28A20571: e_type = "code"
+                        elif e_ctor == 0x73924BE0: 
+                            e_type = "pre"
+                            if offset < len(data):
+                                lang_len = data[offset]
+                                offset += 1 + lang_len
+                                offset = (offset + 3) & ~3
+                        elif e_ctor == 0x6ED02538: e_type = "url"
+                        elif e_ctor == 0x76A6D327: 
+                            e_type = "text_url"
+                            if offset < len(data):
+                                url_len = data[offset]
+                                extra = data[offset+1:offset+1+url_len].decode('utf-8', errors='ignore')
+                                offset += 1 + url_len
+                                offset = (offset + 3) & ~3
+                        elif e_ctor == 0xFA04579D: e_type = "mention"
+                        elif e_ctor == 0x6F635B0D: e_type = "hashtag"
+                        elif e_ctor == 0x6CEF8AC7: e_type = "bot_command"
+                        elif e_ctor == 0x64E475C2: e_type = "email"
+                        elif e_ctor == 0x9B69E34B: e_type = "phone"
+                        
+                        entities.append(MessageEntity(e_type, e_offset, e_length, extra))
 
             if peer_ctor == PEER_USER:
                 peer_type = 'user'
@@ -315,14 +382,16 @@ class JetraClient:
                 peer_type=peer_type,
                 date=date,
                 text=text,
+                reply_to_msg_id=reply_to_msg_id,
+                entities=entities
             )
         except Exception as e:
             print(f"Failed to parse message: {e}")
             return None
 
-    async def send_message(self, peer_id, text, peer_type=None):
+    async def send_message(self, peer_id, text, peer_type=None, reply_to=None):
         if not self._is_running:
-            raise Exception("Client is not started. Call await client.start() first.")
+            raise JetraError("Client is not started. Call await client.start() first.")
 
         if peer_type is None:
             dialogs = self.db.get_dialogs()
@@ -351,38 +420,74 @@ class JetraClient:
                 struct.pack("<q", access_hash)
             )
 
+        reply_to_msg_id = None
+        if reply_to is not None:
+            if isinstance(reply_to, Message):
+                reply_to_msg_id = reply_to.id
+            elif isinstance(reply_to, int):
+                reply_to_msg_id = reply_to
+            else:
+                raise TypeError("reply_to must be Message or int")
+            if reply_to_msg_id == 0:
+                raise ValueError("reply_to msg_id is 0 (invalid)")
+
+        flags = 0
+        reply_bytes = b""
+        if reply_to_msg_id is not None:
+            flags |= 0x1
+            reply_bytes = (
+                struct.pack("<I", 0x3BD4B7C2) +
+                struct.pack("<I", 0) +
+                struct.pack("<i", reply_to_msg_id)
+            )
+
         random_id = random.getrandbits(63)
         body = (
             struct.pack("<I", SEND_MESSAGE_ID) +
-            struct.pack("<I", 0) +
+            struct.pack("<I", flags) +
             input_peer +
+            reply_bytes +
             self._tl_string(text) +
             struct.pack("<q", random_id)
         )
 
         result = await self.client.send_request(wrap_init_connection(body))
         if not result:
-            raise Exception("No response from sendMessage")
+            raise JetraConnectionError("No response from sendMessage")
 
         result = self._unwrap_gzip(result)
         ctor = struct.unpack('<I', result[:4])[0]
         if ctor == RPC_ERROR:
-            raise Exception(f"Server error: {self._parse_rpc_error(result)}")
+            raise JetraRPCError(f"Server error: {self._parse_rpc_error(result)}", method="sendMessage")
+
+        real_msg_id = 0
+        real_date = int(datetime.datetime.now().timestamp())
+        needle = struct.pack("<I", MSG_CTOR_JETRA)
+        pos = result.find(needle)
+        if pos >= 0:
+            try:
+                msg_id_offset = pos + 12
+                real_msg_id = struct.unpack("<i", result[msg_id_offset:msg_id_offset+4])[0]
+                date_offset = msg_id_offset + 4 + 12 + 12
+                real_date = struct.unpack("<i", result[date_offset:date_offset+4])[0]
+            except Exception:
+                pass
 
         sent_msg = Message(
-            msg_id=0,
+            msg_id=real_msg_id,
             from_id=self.session.user_id,
             peer_id=peer_id,
             peer_type=peer_type,
-            date=int(datetime.datetime.now().timestamp()),
+            date=real_date,
             text=text,
+            reply_to_msg_id=reply_to_msg_id
         )
         self.db.save_message(sent_msg)
-        return True
+        return real_msg_id
 
     async def send_to_saved(self, text):
         if not self._is_running:
-            raise Exception("Client is not started.")
+            raise JetraError("Client is not started.")
 
         random_id = random.getrandbits(63)
         body = (
@@ -395,7 +500,7 @@ class JetraClient:
 
         result = await self.client.send_request(wrap_init_connection(body))
         if not result:
-            raise Exception("No response from sendMessage")
+            raise JetraConnectionError("No response from sendMessage")
         return True
 
     async def _load_dialogs(self):
@@ -415,7 +520,6 @@ class JetraClient:
 
         data = self._unwrap_gzip(result)
 
-        CHANNEL_CTOR = 0xD49F34C6
         pos = 0
         count = 0
         while True:
@@ -451,7 +555,6 @@ class JetraClient:
 
             pos += 4
 
-        USER_CTOR = 0xB1B8CC83
         pos = 0
         while True:
             pos = data.find(struct.pack("<I", USER_CTOR), pos)
@@ -464,10 +567,43 @@ class JetraClient:
                 user_id = struct.unpack("<q", data[offset:offset + 8])[0]
                 offset += 8
                 access_hash = struct.unpack("<q", data[offset:offset + 8])[0]
+                offset += 8
 
-                self.db.save_dialog(user_id, 'user', f'User {user_id}', access_hash)
+                strings = []
+                for _ in range(3):
+                    if offset >= len(data): break
+                    
+                    str_len = data[offset]
+                    if str_len < 0xFE:
+                        s = data[offset+1:offset+1+str_len].decode('utf-8', errors='ignore')
+                        offset += 1 + str_len
+                    else:
+                        str_len = int.from_bytes(data[offset+1:offset+4], 'little')
+                        s = data[offset+4:offset+4+str_len].decode('utf-8', errors='ignore')
+                        offset += 4 + str_len
+                    
+                    offset = (offset + 3) & ~3
+                    strings.append(s)
+                
+                first_name = strings[0] if len(strings) > 0 else ""
+                last_name = strings[1] if len(strings) > 1 else ""
+                username = strings[2] if len(strings) > 2 else ""
+                
+                if username and not all(c.isalnum() or c == '_' for c in username):
+                    username = ""
+
+                first_name = ''.join(c for c in first_name if c.isprintable() and c not in '\ufffd')
+                last_name = ''.join(c for c in last_name if c.isprintable() and c not in '\ufffd')
+
+                full_name = f"{first_name} {last_name}".strip()
+                if not full_name:
+                    full_name = f"User {user_id}"
+                if username:
+                    full_name += f" (@{username})"
+
+                self.db.save_dialog(user_id, 'user', full_name, access_hash)
                 count += 1
-            except:
+            except Exception as e:
                 pass
 
             pos += 4
@@ -485,6 +621,138 @@ class JetraClient:
 
     def get_history(self, peer_id=None, limit=100):
         return self.db.get_messages(peer_id, limit)
+
+    async def _get_channel_input(self, peer_id):
+        access_hash = 0
+        for d in self.db.get_dialogs():
+            if d['peer_id'] == peer_id:
+                access_hash = d['access_hash'] or 0
+                break
+        return (
+            struct.pack("<I", INPUT_CHANNEL) +
+            struct.pack("<q", peer_id) +
+            struct.pack("<q", access_hash)
+        )
+
+    async def get_participants(self, peer_id):
+        if not self._is_running: raise JetraError("Client not started.")
+        channel_input = await self._get_channel_input(peer_id)
+        
+        body = (
+            struct.pack("<I", GET_PARTICIPANTS_ID) +
+            channel_input +
+            struct.pack("<I", 0xDE3F3C79) +
+            struct.pack("<i", 0) +
+            struct.pack("<i", 100) +
+            struct.pack("<q", 0)
+        )
+        
+        result = await self.client.send_request(wrap_init_connection(body))
+        if not result: return []
+        result = self._unwrap_gzip(result)
+        resp_ctor = struct.unpack("<I", result[:4])[0]
+        if resp_ctor == RPC_ERROR:
+            raise JetraRPCError(f"Server error: {self._parse_rpc_error(result)}", method="getParticipants")
+            
+        users = []
+        pos = 0
+        needle = struct.pack("<I", USER_CTOR)
+        while True:
+            pos = result.find(needle, pos)
+            if pos == -1: break
+            try:
+                offset = pos + 4 + 8
+                user_id = struct.unpack("<q", result[offset:offset+8])[0]
+                users.append(user_id)
+            except Exception: pass
+            pos += 4
+            
+        return list(set(users))
+
+    async def get_full_channel(self, peer_id):
+        if not self._is_running: raise JetraError("Client not started.")
+        channel_input = await self._get_channel_input(peer_id)
+        
+        body = struct.pack("<I", GET_FULL_CHANNEL_ID) + channel_input
+        
+        result = await self.client.send_request(wrap_init_connection(body))
+        if not result: return None
+        result = self._unwrap_gzip(result)
+        resp_ctor = struct.unpack("<I", result[:4])[0]
+        if resp_ctor == RPC_ERROR:
+            raise JetraRPCError(f"Server error: {self._parse_rpc_error(result)}", method="getFullChannel")
+            
+        channels = []
+        pos = 0
+        needle = struct.pack("<I", CHANNEL_CTOR)
+        while True:
+            pos = result.find(needle, pos)
+            if pos == -1: break
+            try:
+                offset = pos + 4 + 8
+                channel_id = struct.unpack("<q", result[offset:offset+8])[0]
+                offset += 16
+                title_len = result[offset]
+                offset += 1
+                title = result[offset:offset+title_len].decode('utf-8', errors='ignore')
+                channels.append({"channel_id": channel_id, "title": title})
+            except Exception: pass
+            pos += 4
+        return channels
+
+    async def leave_channel(self, peer_id):
+        if not self._is_running: raise JetraError("Client not started.")
+        channel_input = await self._get_channel_input(peer_id)
+        
+        body = struct.pack("<I", LEAVE_CHANNEL_ID) + channel_input
+        
+        result = await self.client.send_request(wrap_init_connection(body))
+        if not result: return False
+        result = self._unwrap_gzip(result)
+        resp_ctor = struct.unpack("<I", result[:4])[0]
+        if resp_ctor == RPC_ERROR:
+            raise JetraRPCError(f"Server error: {self._parse_rpc_error(result)}", method="leaveChannel")
+        return True
+
+    async def resolve_username(self, username):
+        if not self._is_running:
+            raise JetraError("Client not started.")
+            
+        clean_username = username.replace("@", "").strip()
+        if not clean_username:
+            raise ValueError("Username cannot be empty")
+
+        body = (
+            struct.pack("<I", CONTACTS_SEARCH_ID) +
+            self._tl_string(clean_username) +
+            struct.pack("<i", 10)
+        )
+        
+        result = await self.client.send_request(wrap_init_connection(body))
+        if not result:
+            raise JetraConnectionError("No response from contacts.search")
+            
+        result = self._unwrap_gzip(result)
+        resp_ctor = struct.unpack("<I", result[:4])[0]
+        if resp_ctor == RPC_ERROR:
+            raise JetraRPCError(f"Server error: {self._parse_rpc_error(result)}", method="contacts.search")
+            
+        PEER_USER = 0x59511722
+        PEER_CHANNEL = 0xA2A5371E
+        
+        pos_user = result.find(struct.pack("<I", PEER_USER))
+        pos_channel = result.find(struct.pack("<I", PEER_CHANNEL))
+        
+        if pos_user != -1:
+            offset = pos_user + 4
+            peer_id = struct.unpack("<q", result[offset:offset+8])[0]
+            return {"peer_id": peer_id, "peer_type": "user"}
+        elif pos_channel != -1:
+            offset = pos_channel + 4
+            peer_id = struct.unpack("<q", result[offset:offset+8])[0]
+            return {"peer_id": peer_id, "peer_type": "group"}
+        
+        return None
 
     def _unwrap_gzip(self, result):
         if len(result) < 4:
