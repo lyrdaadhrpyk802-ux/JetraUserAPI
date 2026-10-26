@@ -47,3 +47,8 @@ env/
 # --- OS ---
 .DS_Store
 Thumbs.db
+# --- Test and Debug Files ---
+test_main_*.py
+scan_result.txt
+web_js/
+experimental/
